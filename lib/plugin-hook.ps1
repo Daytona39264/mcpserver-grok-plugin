@@ -127,6 +127,17 @@ function Get-PluginStartPath {
     return $currentPath
 }
 
+function Set-PluginWorkspaceIdentity {
+    param([string]$ResolvedPath)
+    if ([string]::IsNullOrWhiteSpace($ResolvedPath)) { return }
+    if (-not (Test-Path -LiteralPath $ResolvedPath -PathType Container)) { return }
+    $resolved = (Resolve-Path -LiteralPath $ResolvedPath).ProviderPath
+    $env:MCP_WORKSPACE_PATH = $resolved
+    $env:MCPSERVER_WORKSPACE_PATH = $resolved
+    $env:MCP_WORKSPACE_START_DIR = $resolved
+    try { Set-Location -LiteralPath $resolved } catch { }
+}
+
 function Get-YamlScalar {
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -628,8 +639,69 @@ function Ensure-PluginMarkerFresh {
     }
 }
 
+function Test-PluginPromptIsBackgroundAgent {
+    <#
+    .SYNOPSIS
+        FR-MCP-TRIAGEPLUGIN-001: true when UserPromptSubmit is a background or hostile agent brief.
+    #>
+    param(
+        [string]$Prompt,
+        [string]$Payload
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($env:MCP_SUBAGENT_ID) -or
+        -not [string]::IsNullOrWhiteSpace($env:GROK_SUBAGENT_ID)) {
+        return $true
+    }
+
+    $text = [string]$Prompt
+    if ([string]::IsNullOrWhiteSpace($text) -and -not [string]::IsNullOrWhiteSpace($Payload)) {
+        if (Get-Command Get-HookPayloadValue -ErrorAction SilentlyContinue) {
+            $text = Get-HookPayloadValue -Payload $Payload -Name 'prompt'
+            foreach ($name in @('subagentId', 'subagent_id', 'agentType', 'agent_type')) {
+                $v = Get-HookPayloadValue -Payload $Payload -Name $name
+                if ($v -match 'subagent|background|hostile') { return $true }
+            }
+        }
+    }
+
+    if ($text -match 'You are the HOSTILE VALIDATOR') { return $true }
+    if ($text -match 'ValidatorIdentity:\s*GrokSubagentHostile') { return $true }
+    if ($text -match 'FIRST ACTION \(mandatory, before any validation\)') { return $true }
+    return $false
+}
+
+function Get-PluginRootTurnIsolationDecision {
+    <#
+    .SYNOPSIS
+        FR-MCP-TRIAGEPLUGIN-001: reuse or skip-open when a background prompt would clobber the root turn.
+    #>
+    param(
+        $OpenTurn,
+        [string]$IncomingPrompt,
+        [string]$Payload
+    )
+
+    if ($null -eq $OpenTurn) { return 'open-new' }
+
+    $status = ''
+    $requestId = ''
+    if ($OpenTurn -is [System.Collections.IDictionary]) {
+        if ($OpenTurn.Contains('status')) { $status = [string]$OpenTurn['status'] }
+        if ($OpenTurn.Contains('turnRequestId')) { $requestId = [string]$OpenTurn['turnRequestId'] }
+    }
+    if ([string]::IsNullOrWhiteSpace($requestId)) { return 'open-new' }
+    if (-not (Test-PluginPromptIsBackgroundAgent -Prompt $IncomingPrompt -Payload $Payload)) {
+        return 'open-new'
+    }
+    if ($status -eq 'in_progress') { return 'reuse' }
+    if ($status -eq 'completed') { return 'isolate-skip' }
+    return 'open-new'
+}
+
 function Open-PluginTurn {
     $startPath = Get-PluginStartPath -PreferredPath $WorkspacePath
+    Set-PluginWorkspaceIdentity -ResolvedPath $startPath
     $cacheDir = Get-PluginCacheDir -StartPath $startPath
     $sessionFile = Join-Path $cacheDir 'session-state.yaml'
     Ensure-PluginMarkerFresh -StartPath $startPath | Out-Null
@@ -700,6 +772,24 @@ function Open-PluginTurn {
                 })
                 return
             }
+
+            $isolation = Get-PluginRootTurnIsolationDecision -OpenTurn $openTurn -IncomingPrompt $prompt -Payload $payload
+            if ($isolation -eq 'reuse' -or $isolation -eq 'isolate-skip') {
+                Write-PluginJson ([ordered]@{
+                    hookSpecificOutput = [ordered]@{
+                        hookEventName = 'UserPromptSubmit'
+                        status = $(if ($isolation -eq 'reuse') { 'turn-already-open' } else { 'root-turn-isolated' })
+                        turnRequestId = $openRequestId
+                        isolation = $isolation
+                        additionalContext = if ($isolation -eq 'reuse') {
+                            "session log turn $openRequestId remains active. Background UserPromptSubmit did not supersede the root work turn."
+                        } else {
+                            "root session log turn $openRequestId is completed. Background UserPromptSubmit did not rewrite current-turn.yaml."
+                        }
+                    }
+                })
+                return
+            }
         }
     }
 
@@ -712,10 +802,13 @@ function Open-PluginTurn {
     $sessionId = if ($sessionState.Contains('sessionId')) { [string]$sessionState['sessionId'] } else { '' }
 
     $turnRequestId = 'req-{0}-prompt-{1:x4}' -f (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ'), (Get-Random -Maximum 0xffff)
+    $turnContext = Resolve-PluginTurnPlanContext
     $paramsYaml = ConvertTo-PluginParamsYaml ([ordered]@{
         requestId = $turnRequestId
         queryTitle = $title
         queryText = $prompt
+        planFile = $turnContext.planFile
+        todoId = $turnContext.todoId
     })
     $beginOutput = Invoke-PluginRepl -Method 'workflow.sessionlog.beginTurn' -ParamsYaml $paramsYaml
     if ($script:LastPluginReplExitCode -ne 0) {
@@ -772,6 +865,7 @@ function Open-PluginTurn {
 
 function Close-PluginTurnIfNeeded {
     $startPath = Get-PluginStartPath -PreferredPath $WorkspacePath
+    Set-PluginWorkspaceIdentity -ResolvedPath $startPath
     $cacheDir = Get-PluginCacheDir -StartPath $startPath
     $turnFile = Join-Path $cacheDir 'current-turn.yaml'
     if ($env:CLAUDE_STOP_HOOK_ACTIVE -eq 'true') {
@@ -884,6 +978,7 @@ function Close-PluginTurnIfNeeded {
 
 function Invoke-CodeVerify {
     $startPath = Get-PluginStartPath -PreferredPath $WorkspacePath
+    Set-PluginWorkspaceIdentity -ResolvedPath $startPath
     $cacheDir = Get-PluginCacheDir -StartPath $startPath
     $turnFile = Join-Path $cacheDir 'current-turn.yaml'
     $payload = Read-HookInput
@@ -977,6 +1072,48 @@ function Get-PlanTitle {
 
 function Get-PlanTodoMapPath {
     Join-Path (Get-PluginCacheDir) 'plan-todo-map.yaml'
+}
+
+function Get-LastPlanTodoMapEntry {
+    $mapPath = Get-PlanTodoMapPath
+    if (-not (Test-Path -LiteralPath $mapPath)) { return $null }
+    $lines = [System.IO.File]::ReadAllLines($mapPath)
+    $planFile = $null
+    $todoId = $null
+    for ($i = 0; $i -lt $lines.Length; $i++) {
+        if ($lines[$i] -match '^\s*-\s*planFile:\s*(.+)$') {
+            $planFile = $Matches[1].Trim().Trim('"')
+            $todoId = $null
+            for ($j = $i + 1; $j -lt [Math]::Min($lines.Length, $i + 4); $j++) {
+                if ($lines[$j] -match '^\s*todoId:\s*(.+)$') {
+                    $todoId = $Matches[1].Trim().Trim('"')
+                    break
+                }
+            }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($planFile)) { return $null }
+    return [ordered]@{ planFile = $planFile; todoId = $todoId }
+}
+
+function Resolve-PluginTurnPlanContext {
+    $planFile = Get-PlanFilePathFromInput
+    if (-not $planFile -or -not (Test-Path -LiteralPath $planFile -PathType Leaf)) {
+        $mapped = Get-LastPlanTodoMapEntry
+        if ($mapped -and $mapped.planFile -and (Test-Path -LiteralPath $mapped.planFile -PathType Leaf)) {
+            $planFile = [string]$mapped.planFile
+        } else {
+            $planFile = $null
+        }
+    }
+
+    if (-not $planFile) {
+        return [ordered]@{ planFile = 'None'; todoId = 'None' }
+    }
+
+    $todoId = Find-PlanTodoId -PlanFile $planFile
+    if ([string]::IsNullOrWhiteSpace($todoId)) { $todoId = 'None' }
+    return [ordered]@{ planFile = $planFile; todoId = $todoId }
 }
 
 function Get-TodoIdFromReplOutput {
