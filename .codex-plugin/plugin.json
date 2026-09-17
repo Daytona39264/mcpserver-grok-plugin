@@ -7,7 +7,7 @@
     "url": "https://github.com/sharpninja"
   },
   "homepage": "https://github.com/sharpninja/mcpserver-grok-plugin",
-  "repository": "https://github.com/sharpninja/mcpserver-grok-plugin",
+  "repository": "https://github.com/Daytona39264/mcpserver-grok-plugin",
   "license": "MIT",
   "keywords": [
     "mcp",
@@ -61,5 +61,10 @@
     "subagentCapture": true,
     "richTurnFields": true,
     "secretRedaction": true
+  },
+  "interface": {
+    "displayName": "McpServer Grok Plugin",
+    "shortDescription": "Connect Grok CLI/TUI agents to McpServer for session logging, TODOs, and workflow continuity.",
+    "composerIcon": "./assets/icon.svg"
   }
 }
