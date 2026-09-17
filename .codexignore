@@ -1,0 +1,6 @@
+.git/
+.claude-plugin/
+.grok-plugin/
+cache/
+*.tmp
+.hol-plugin-scanner-dist/

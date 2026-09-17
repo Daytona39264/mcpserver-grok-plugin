@@ -6,8 +6,8 @@
     "name": "Payton Byrd (The Sharp Ninja)",
     "url": "https://github.com/sharpninja"
   },
-  "homepage": "https://github.com/sharpninja/mcpserver-grok-plugin",
-  "repository": "https://github.com/sharpninja/mcpserver-grok-plugin",
+  "homepage": "https://github.com/Daytona39264/mcpserver-grok-plugin",
+  "repository": "https://github.com/Daytona39264/mcpserver-grok-plugin",
   "license": "MIT",
   "keywords": [
     "mcp",
@@ -61,5 +61,19 @@
     "subagentCapture": true,
     "richTurnFields": true,
     "secretRedaction": true
+  },
+  "interface": {
+    "displayName": "MCPServer Grok Plugin",
+    "shortDescription": "Connect Grok CLI/TUI agents to MCPServer for session logging, TODOs, and workflow continuity.",
+    "longDescription": "A Codex-compatible fork of the upstream MCPServer Grok plugin that connects Grok CLI/TUI sessions to MCPServer for workspace-scoped TODOs, session logging, requirements tracking, and continuity hooks.",
+    "developerName": "Payton Byrd (The Sharp Ninja)",
+    "category": "Development & Workflow",
+    "capabilities": [
+      "session-logging",
+      "todo-management",
+      "requirements-tracking",
+      "workspace-continuity"
+    ],
+    "composerIcon": "./assets/icon.svg"
   }
 }
