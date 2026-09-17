@@ -20,7 +20,7 @@
   ],
   "skills": "./skills/",
   "hooks": {
-    "path": "hooks/hooks.json"
+    "path": "./hooks/hooks.json"
   },
   "mcpServers": "./.mcp.json"
 }
